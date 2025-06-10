@@ -18,8 +18,9 @@ const FileUpload: React.FC = () => {
     const formData = new FormData();
     formData.append('pdf', file);
 
+
     try {
-      const res = await fetch('http://localhost:8000/upload/pdf', {
+      const res = await fetch('https://pdfwhisper-production.up.railway.app/upload/pdf', {
         method: 'POST',
         body: formData,
       });

@@ -6,60 +6,78 @@ import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import dotenv from 'dotenv';
 import { QdrantVectorStore } from '@langchain/qdrant';
+import { Dropbox } from 'dropbox';
+import stream from 'stream';
+import fetch from 'node-fetch';
 
+dotenv.config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-dotenv.config();
 
-// Redis connection to Upstash (same as worker.js)
+// Redis connection (Upstash or other Redis instance)
 const redisConnection = new Redis(process.env.REDIS_URL, {
   maxRetriesPerRequest: null,
 });
 
-// BullMQ Queue
+// BullMQ queue setup
 const queue = new Queue('file-upload-queue', {
   connection: redisConnection,
 });
 
-// Multer storage for PDF uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, 'uploads/'),
-  filename: (req, file, cb) => {
-    const date = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-    const uniqueId = Math.round(Math.random() * 1e9);
-    cb(null, `${uniqueId}-${date}-${file.originalname}`);
-  },
-});
+// Use memoryStorage for in-memory PDF processing
+const upload = multer({ storage: multer.memoryStorage() });
 
-const upload = multer({ storage });
+// Dropbox setup
+const dbx = new Dropbox({ accessToken: process.env.DROPBOX_ACCESS_TOKEN });
 
-// Upload route — adds PDF to BullMQ queue
+async function uploadToDropbox(fileBuffer, filename) {
+  const dropboxPath = `/pdfwhisper_uploads/${filename}`;
+  const response = await dbx.filesUpload({
+    path: dropboxPath,
+    contents: fileBuffer,
+    mode: 'add',
+  });
+
+  console.log('✅ Uploaded to Dropbox:', response.result.path_display);
+  return response.result;
+}
+
+// Route: Upload PDF and push to queue
 app.post('/upload/pdf', upload.single('pdf'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No PDF uploaded' });
   }
 
-  await queue.add('file-ready', {
-    filename: req.file.originalname,
-    destination: req.file.destination,
-    path: req.file.path,
-  });
+  const uniqueId = Math.round(Math.random() * 1e9);
+  const date = new Date().toISOString().split('T')[0];
+  const dropboxFilename = `${uniqueId}-${date}-${req.file.originalname}`;
 
-  res.json({ message: 'PDF uploaded and job queued' });
+  try {
+    const dropboxFile = await uploadToDropbox(req.file.buffer, dropboxFilename);
+
+    await queue.add('file-ready', {
+      filename: req.file.originalname,
+      dropboxPath: dropboxFile.path_display,
+    });
+
+    res.json({ message: 'PDF uploaded to Dropbox and job queued' });
+  } catch (error) {
+    console.error('❌ Dropbox upload or queue error:', error);
+    res.status(500).json({ error: 'Failed to upload to Dropbox or add to queue' });
+  }
 });
 
-//Convert PDF to vector embedding and add to DB
+// HuggingFace embedding class
 class HuggingFaceEmbeddings {
   constructor(apiKey) {
     this.apiKey = process.env.HUGGINGFACE_API_KEY;
-    this.apiUrl =
-      'https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction';
+    this.apiUrl = 'https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction';
   }
 
   async embedDocuments(documents) {
-    const texts = documents.map((doc) => (doc.pageContent ? doc.pageContent : doc));
+    const texts = documents.map(doc => doc.pageContent || doc);
     const response = await fetch(this.apiUrl, {
       method: 'POST',
       headers: {
@@ -96,28 +114,23 @@ class HuggingFaceEmbeddings {
   }
 }
 
-//Chat Feature
+// Chat route
 app.get('/chat', async (req, res) => {
   try {
     const userQuery = req.query.message;
     if (!userQuery) return res.status(400).json({ error: 'Message query param required' });
 
-    // Instantiate embeddings with your Hugging Face API key
     const embeddings = new HuggingFaceEmbeddings(process.env.HUGGINGFACE_API_KEY);
 
-    // Connect to your existing Qdrant collection
     const vectorStore = await QdrantVectorStore.fromExistingCollection(embeddings, {
-          url: process.env.QDRANT_URL,
-          apiKey: process.env.QDRANT_API_KEY,
-          collectionName: process.env.QDRANT_COLLECTION,
+      url: process.env.QDRANT_URL,
+      apiKey: process.env.QDRANT_API_KEY,
+      collectionName: process.env.QDRANT_COLLECTION,
     });
 
-
-    // Get top 2 relevant documents from Qdrant for the user query
     const retriever = vectorStore.asRetriever({ k: 2 });
     const result = await retriever.invoke(userQuery);
 
-    // Build prompt for Gemini API including the context and question
     const SYSTEM_PROMPT = `
 You are a helpful AI Assistant. Use the following context extracted from documents to answer the user's query.
 
@@ -129,13 +142,8 @@ Question: ${userQuery}
 Answer:
 `;
 
-    // Gemini API call setup
-      const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-      if (!GEMINI_API_KEY) throw new Error('Missing GEMINI_API_KEY in environment variables');
+    const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`;
 
-    const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
-
-    // Call Gemini API with prompt
     const response = await fetch(GEMINI_API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -35,7 +35,7 @@ const ChatComponent: React.FC = () => {
     setLoading(true);
 
     try {
-      const res = await fetch(`http://localhost:8000/chat?message=${encodeURIComponent(message)}`, {
+      const res = await fetch(`https://pdfwhisper-production.up.railway.app/chat?message=${encodeURIComponent(message)}`, {
         method: 'GET',
         mode: 'cors',
       });
