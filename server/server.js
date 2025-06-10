@@ -5,6 +5,8 @@ import multer from 'multer';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import dotenv from 'dotenv';
+import { QdrantVectorStore } from '@langchain/qdrant';
+
 
 const app = express();
 app.use(cors());
@@ -93,6 +95,72 @@ class HuggingFaceEmbeddings {
     return vector;
   }
 }
+
+//Chat Feature
+app.get('/chat', async (req, res) => {
+  try {
+    const userQuery = req.query.message;
+    if (!userQuery) return res.status(400).json({ error: 'Message query param required' });
+
+    // Instantiate embeddings with your Hugging Face API key
+    const embeddings = new HuggingFaceEmbeddings(process.env.HUGGINGFACE_API_KEY);
+
+    // Connect to your existing Qdrant collection
+    const vectorStore = await QdrantVectorStore.fromExistingCollection(embeddings, {
+          url: process.env.QDRANT_URL,
+          apiKey: process.env.QDRANT_API_KEY,
+          collectionName: process.env.QDRANT_COLLECTION,
+    });
+
+
+    // Get top 2 relevant documents from Qdrant for the user query
+    const retriever = vectorStore.asRetriever({ k: 2 });
+    const result = await retriever.invoke(userQuery);
+
+    // Build prompt for Gemini API including the context and question
+    const SYSTEM_PROMPT = `
+You are a helpful AI Assistant. Use the following context extracted from documents to answer the user's query.
+
+Context:
+${JSON.stringify(result)}
+
+Question: ${userQuery}
+
+Answer:
+`;
+
+    // Gemini API call setup
+      const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+      if (!GEMINI_API_KEY) throw new Error('Missing GEMINI_API_KEY in environment variables');
+
+    const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+    // Call Gemini API with prompt
+    const response = await fetch(GEMINI_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: SYSTEM_PROMPT }] }],
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(`Gemini API error: ${response.status} ${errorBody}`);
+    }
+
+    const data = await response.json();
+    const answer = data?.candidates?.[0]?.content?.parts?.[0]?.text || 'No answer generated.';
+
+    res.json({
+      message: answer.trim(),
+      docs: result,
+    });
+  } catch (error) {
+    console.error('Chat error:', error);
+    res.status(500).json({ error: 'Failed to process chat request' });
+  }
+});
 
 // Start server
 const PORT = process.env.PORT || 8000;
