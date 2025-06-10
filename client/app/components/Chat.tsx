@@ -81,7 +81,7 @@ return (
   <div className="flex flex-col h-[92vh] max-w-4xl mx-auto p-6 bg-[#121212] border border-[#2c2c2c] rounded-lg shadow-lg text-gray-300 font-sans select-text">
     <header className="mb-6 border-b border-gray-700 pb-3 flex items-center justify-between">
       <h1 className="text-3xl font-semibold tracking-wide text-white">
-        PDG RAG ChatBot
+        PDF ChatBot
       </h1>
       <div className="text-sm text-gray-500">Powered by LangChain</div>
     </header>

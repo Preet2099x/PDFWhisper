@@ -77,7 +77,7 @@ const FileUpload: React.FC = () => {
     <div className="w-full h-full flex flex-col px-4">
       {/* Welcome text */}
       <div className="text-center mt-12 mb-6">
-        <h2 className="text-3xl font-bold text-white">Welcome to PDF RAG</h2>
+        <h2 className="text-3xl font-bold text-white">Welcome to PDFWhisper</h2>
         <p className="text-sm text-gray-400">Upload your PDF to begin asking questions.</p>
       </div>
 
